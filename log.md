@@ -58,5 +58,6 @@ Notes and next steps
 - 2025-11-12 14:05 (assistant) | Implemented quick-win visualizations and Streamlit UI updates: added `src/visualization.py`, `scripts/generate_visuals.py`, and updated `streamlit_app.py` to show label distribution, top-words, ROC and PR curves, confusion matrix, and sample messages.
 - 2025-11-12 14:05 (assistant) | Ran demo generator: produced `artifacts/visuals.json` (visualization data) and confirmed file size (~179 KB).
 
--- end of log update --
--- end of log update --
+
+- 2025-11-12 15:02 (assistant) | Recreated and enhanced `scripts/generate_report_pdf.py` (adds embedded ROC/PR/confusion-matrix charts via matplotlib) and regenerated `artifacts/report.pdf`.
+
