@@ -35,6 +35,55 @@ def predict_text_via_api(text: str, api_url: str = 'http://127.0.0.1:5000/predic
         return {'error': str(e)}
 
 
+def predict_text_local(text: str):
+    """Try to predict locally by loading a pipeline from artifacts/ or models/. Returns same dict as API."""
+    import joblib
+    from pathlib import Path
+
+    # try to use explainability loader if available
+    pipeline = None
+    if _EXPLAIN is not None:
+        try:
+            pipeline = _EXPLAIN.load_pipeline_from_paths()
+        except Exception:
+            pipeline = None
+
+    # fallback to common artifact path
+    if pipeline is None:
+        p = Path('artifacts/baseline_model.joblib')
+        if p.exists():
+            pipeline = joblib.load(p)
+        else:
+            # try models/ directory
+            mdir = Path('models')
+            if mdir.exists():
+                for fname in ('spam_pipeline.joblib','pipeline.joblib','baseline_model.joblib'):
+                    f = mdir / fname
+                    if f.exists():
+                        pipeline = joblib.load(f)
+                        break
+
+    if pipeline is None:
+        raise FileNotFoundError('No local pipeline found in artifacts/ or models/')
+
+    # perform prediction
+    try:
+        pred = pipeline.predict([text])[0]
+    except Exception as e:
+        raise RuntimeError(f'Local prediction failed: {e}')
+    prob = None
+    try:
+        probs = pipeline.predict_proba([text])[0]
+        # assume binary and class 1 is spam
+        if len(probs) >= 2:
+            prob = float(probs[1])
+        else:
+            prob = float(probs[0])
+    except Exception:
+        prob = None
+    return {'label': 'spam' if int(pred) == 1 else 'ham', 'probability': prob}
+
+
 def main():
     st.title('Spam Classifier (Baseline)')
     st.write('Upload dataset or input text to classify.')
@@ -55,9 +104,22 @@ def main():
             if not text:
                 st.warning('Please enter text to classify.')
             else:
-                res = predict_text_via_api(text)
-                if res.get('error'):
-                    st.error(f"Error calling API: {res['error']}")
+                # Try local prediction first (no need to run Flask API). Fallback to API if no local model.
+                res = None
+                try:
+                    res = predict_text_local(text)
+                except FileNotFoundError:
+                    # local model not found, fallback to API
+                    res = predict_text_via_api(text)
+                except Exception as e:
+                    # other local error; report and still try API
+                    st.warning(f'Local prediction failed: {e} — trying remote API')
+                    res = predict_text_via_api(text)
+
+                if res is None:
+                    st.error('No prediction result (local and remote attempts failed).')
+                elif res.get('error'):
+                    st.error(f"Error: {res['error']}")
                 else:
                     st.metric('Prediction', res['label'])
                     if res.get('probability') is not None:
@@ -105,6 +167,44 @@ def main():
                                         st.write(shap_res)
                             except Exception as e:
                                 st.error(f'Explainability computation failed: {e}')
+
+                        # Batch prediction UI
+                        st.markdown('---')
+                        st.subheader('Batch prediction (CSV)')
+                        st.write('Upload a CSV with a `text` column or two columns (label,text). The app will predict labels and probabilities.')
+                        batch_file = st.file_uploader('Upload CSV for batch prediction', type=['csv'], key='batch')
+                        if batch_file is not None:
+                            try:
+                                bdf = pd.read_csv(batch_file, header=0)
+                            except Exception:
+                                # try no header
+                                bdf = pd.read_csv(batch_file, header=None).rename(columns={0: 'label', 1: 'text'})
+                            # try to find text column
+                            if 'text' not in bdf.columns:
+                                # try second column
+                                if len(bdf.columns) >= 2:
+                                    bdf = bdf.rename(columns={bdf.columns[1]: 'text'})
+                                else:
+                                    st.error('Could not find a `text` column in the uploaded CSV.')
+                                    bdf = None
+                            if bdf is not None:
+                                texts = bdf['text'].astype(str).tolist()
+                                preds = []
+                                for t in texts:
+                                    try:
+                                        r = predict_text_local(t)
+                                    except FileNotFoundError:
+                                        r = predict_text_via_api(t)
+                                    except Exception as e:
+                                        r = {'error': str(e)}
+                                    preds.append(r)
+                                pred_df = pd.DataFrame(preds)
+                                out = pd.concat([bdf.reset_index(drop=True), pred_df.reset_index(drop=True)], axis=1)
+                                st.write('Predictions:')
+                                st.dataframe(out.head(200))
+                                # provide download
+                                csv_bytes = out.to_csv(index=False).encode('utf-8')
+                                st.download_button('Download predictions as CSV', data=csv_bytes, file_name='predictions.csv', mime='text/csv')
 
     # Explore Data tab
     with tabs[1]:
